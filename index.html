@@ -7,7 +7,13 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #000; overflow: hidden; font-family: sans-serif; }
-    canvas { display: block; }
+    canvas {
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      width: 100vw;
+      height: 100vh;
+    }
     #overlay {
       position: fixed;
       inset: 0;
@@ -68,7 +74,7 @@
   </div>
   <div class="ctrl">
     <label>Particles</label>
-    <input type="range" id="maxParticles" min="100" max="2000" value="400" step="50" />
+    <input type="range" id="maxParticles" min="50" max="500" value="150" step="10" />
   </div>
   <div class="ctrl">
     <label>Lifespan</label>
@@ -80,13 +86,28 @@
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
+// Low-res pixel grid for 8-bit look
+const SCALE = 4;
 let W, H;
 function resize() {
-  W = canvas.width = window.innerWidth;
-  H = canvas.height = window.innerHeight;
+  W = canvas.width  = Math.floor(window.innerWidth  / SCALE);
+  H = canvas.height = Math.floor(window.innerHeight / SCALE);
 }
 resize();
 window.addEventListener('resize', resize);
+
+// 8-bit palette (NES-inspired)
+const PALETTE = [
+  '#f8f8f8', '#fcfc00', '#f83800', '#e45c10',
+  '#00b800', '#00a844', '#0058f8', '#6844fc',
+  '#d800cc', '#f878f8', '#00e8d8', '#00fcfc',
+  '#787878', '#b8b8b8', '#3cbcfc', '#98f8b8',
+];
+
+function paletteColor(hueOffset, binFraction) {
+  const idx = Math.floor(((hueOffset / 360) + binFraction) * PALETTE.length) % PALETTE.length;
+  return PALETTE[(idx + PALETTE.length) % PALETTE.length];
+}
 
 let analyser, dataArray, bufferLength;
 
@@ -114,104 +135,132 @@ const hueEl          = document.getElementById('hue');
 const maxParticlesEl = document.getElementById('maxParticles');
 const lifespanEl     = document.getElementById('lifespan');
 
+// Draw a pixel-art square ring (hollow square)
+function drawPixelRing(cx, cy, radius, color, thickness) {
+  const px = Math.max(1, Math.round(thickness));
+  ctx.fillStyle = color;
+  const r = Math.round(radius);
+  // Top & bottom bars
+  ctx.fillRect(Math.round(cx - r), Math.round(cy - r), r * 2, px);
+  ctx.fillRect(Math.round(cx - r), Math.round(cy + r - px), r * 2, px);
+  // Left & right bars
+  ctx.fillRect(Math.round(cx - r), Math.round(cy - r + px), px, r * 2 - px * 2);
+  ctx.fillRect(Math.round(cx + r - px), Math.round(cy - r + px), px, r * 2 - px * 2);
+}
+
 // --- Rings ---
 const rings = [];
+const MAX_RINGS = 200;
 
 class Ring {
   constructor(binIndex, amp) {
     this.cx = W / 2;
     this.cy = H / 2;
-    this.radius = 3;
+    this.radius = 2;
     this.amp = amp;
     this.life = 1;
     this.decay = (1 / parseInt(lifespanEl.value)) * (1.5 + (1 - amp));
-    this.hue = (parseInt(hueEl.value) + binIndex * (360 / bufferLength)) % 360;
-    this.speed = 1 + amp * 5;
-    this.lineWidth = 0.5 + amp * 2;
+    this.color = paletteColor(parseInt(hueEl.value), binIndex / bufferLength);
+    this.speed = 0.5 + amp * 3;
+    this.thickness = Math.max(1, Math.round(amp * 3));
+    // Drift: rings wobble as they expand
+    this.driftX = (Math.random() - 0.5) * 0.4;
+    this.driftY = (Math.random() - 0.5) * 0.4;
+    // Jitter phase for wobbly movement
+    this.phase = Math.random() * Math.PI * 2;
+    this.wobble = 0.3 + Math.random() * 0.5;
+    this.tick = 0;
   }
 
   update() {
     this.radius += this.speed;
+    this.cx += this.driftX + Math.sin(this.phase + this.tick * 0.15) * this.wobble;
+    this.cy += this.driftY + Math.cos(this.phase + this.tick * 0.12) * this.wobble;
+    this.tick++;
     this.life -= this.decay;
   }
 
   draw() {
     ctx.globalAlpha = Math.max(0, this.life * this.amp);
-    ctx.beginPath();
-    ctx.arc(this.cx, this.cy, this.radius, 0, Math.PI * 2);
-    ctx.strokeStyle = `hsl(${this.hue}, 85%, 60%)`;
-    ctx.lineWidth = this.lineWidth;
-    ctx.stroke();
+    drawPixelRing(this.cx, this.cy, this.radius, this.color, this.thickness);
   }
 }
 
-// --- Particles (small accent sparks) ---
+// --- Particles (pixel blocks) ---
 const particles = [];
 
 class Particle {
   constructor(energy) {
     const angle = Math.random() * Math.PI * 2;
-    const r = Math.random() * 20;
+    const r = Math.random() * 5;
     this.x = W / 2 + Math.cos(angle) * r;
     this.y = H / 2 + Math.sin(angle) * r;
-    const speed = 0.3 + energy * 2.5;
-    this.vx = Math.cos(angle) * speed;
-    this.vy = Math.sin(angle) * speed;
+    const speed = 0.5 + energy * 4;
+    this.vx = Math.cos(angle) * speed + (Math.random() - 0.5);
+    this.vy = Math.sin(angle) * speed + (Math.random() - 0.5);
+    this.gravity = 0.08;
     this.life = 1;
     this.decay = 1 / (parseInt(lifespanEl.value) * (0.4 + Math.random() * 0.6));
-    this.hue = (parseInt(hueEl.value) + Math.random() * 60 - 30 + 360) % 360;
-    this.size = 0.5 + energy * 1.5;
+    this.color = paletteColor(parseInt(hueEl.value), Math.random());
+    this.size = 1 + Math.floor(energy * 2); // 1–3px blocks
   }
 
   update() {
-    this.vx *= 0.97;
-    this.vy *= 0.97;
+    this.vx *= 0.96;
+    this.vy *= 0.96;
+    this.vy += this.gravity;
     this.x += this.vx;
     this.y += this.vy;
+    // Bounce off floor
+    if (this.y > H - this.size) {
+      this.y = H - this.size;
+      this.vy *= -0.5;
+      this.vx *= 0.85;
+    }
     this.life -= this.decay;
   }
 
   draw() {
-    ctx.globalAlpha = Math.max(0, this.life * 0.9);
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
-    ctx.fillStyle = `hsl(${this.hue}, 90%, 70%)`;
-    ctx.fill();
+    ctx.globalAlpha = Math.max(0, this.life);
+    ctx.fillStyle = this.color;
+    ctx.fillRect(Math.round(this.x), Math.round(this.y), this.size, this.size);
   }
 }
 
-const MAX_RINGS = 1500;
+let frameCount = 0;
 
 function loop() {
   requestAnimationFrame(loop);
+  frameCount++;
 
   analyser.getByteFrequencyData(dataArray);
 
   const sensitivity = parseFloat(sensitivityEl.value) / 5;
 
-  // Overall energy for fade control
   let sum = 0;
   for (let i = 0; i < bufferLength; i++) sum += dataArray[i];
   const energy = Math.min(1, (sum / (bufferLength * 255)) * sensitivity * 2.5);
 
-  // Fade background
-  ctx.globalAlpha = 0.12 + energy * 0.08;
+  // Fade background — chunky pixel fade
+  ctx.globalAlpha = 0.15 + energy * 0.1;
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
   ctx.globalAlpha = 1;
 
-  // Spawn one ring per frequency bin that's loud enough
-  const threshold = Math.max(0.02, 0.15 / sensitivity);
-  for (let i = 0; i < bufferLength && rings.length < MAX_RINGS; i++) {
-    const amp = Math.min(1, (dataArray[i] / 255) * sensitivity);
-    if (amp > threshold) {
-      rings.push(new Ring(i, amp));
+  // Spawn rings every 4th bin, every other frame
+  const threshold = Math.max(0.05, 0.2 / sensitivity);
+  if (frameCount % 2 === 0) {
+    for (let i = 0; i < bufferLength && rings.length < MAX_RINGS; i += 4) {
+      const amp = Math.min(1, (dataArray[i] / 255) * sensitivity);
+      if (amp > threshold) {
+        rings.push(new Ring(i, amp));
+      }
     }
   }
 
-  // Spawn small particles based on total energy
+  // Spawn pixel particles
   const maxP = parseInt(maxParticlesEl.value);
-  const spawnCount = Math.floor(energy * 6 * sensitivity);
+  const spawnCount = Math.floor(energy * 4 * sensitivity);
   for (let i = 0; i < spawnCount && particles.length < maxP; i++) {
     particles.push(new Particle(energy));
   }
